@@ -27,13 +27,15 @@ use DelimExportCat;
 # Options
 my $file    = '';
 my $encode  = '';
-my $xml     = '';
+our $xml     = '';
 my $limit   = '';
 my $verbose = '';
 my $debug   = '';
 my $delimited = '';
+my $accumulate_records = 0;
 
 GetOptions (
+  'a|acc'     => \$accumulate_records,
   'i|input=s' => \$file,
   'e|encode'  => \$encode,
   'l|limit=i' => \$limit,
@@ -66,6 +68,7 @@ Usage:
 Options:
   -i --input   = Input file
   -e, --encode = Apply: binmode STDOUT, :encoding(UTF-8)
+  -a, --acc    = Accumulate records before starting output (only works with --delim).
   -l, --limit  = Limit outout to first n records
   -x --xml     = Output as MARCXML
   -v --verbose = Verbose output
@@ -91,24 +94,41 @@ if ( $xml ) {
     say MARC::File::XML::header();
 }
 
+sub output {
+    my $record = shift;
+    if ($xml) {
+        # print $record->as_xml_record(), "\n";
+        say MARC::File::XML::record( $record );
+    } else {
+        print $record->as_usmarc(), "\n";
+    }
+}
+
 
 if ($delimited) {
+
     my $dec = DelimExportCat->new( {
-        'inputh'  => $fh,
-        'limit'   => $limit ? $limit : undef,
-        'verbose' => $verbose,
-        'debug'   => $debug
+        'inputh'             => $fh,
+        'limit'              => $limit ? $limit : undef,
+        'verbose'            => $verbose,
+        'accumulate_records' => $accumulate_records,
+        'debug'              => $debug
     } );
 
     while (my $record = $dec->next_record()) {
         foreach my $warning ($record->warnings()) {
-            say STDERR "Record " . $record->{record_nr} . " has warnings: " . $warning
+            say STDERR "Record " . $record->{record_nr} . " has warnings: " . $warning;
         }
-        if ($xml) {
-            # print $record->as_xml_record(), "\n";
-            say MARC::File::XML::record( $record );
-        } else {
-            print $record->as_usmarc(), "\n";
+        unless ($accumulate_records) {
+            output($record);
+        }
+    }
+
+    if ($accumulate_records) {
+        my %records = %{$dec->get_records()};
+        foreach my $record_id (keys %records) {
+            my $record = $records{$record_id};
+            output($record);
         }
     }
 

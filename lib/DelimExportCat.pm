@@ -21,8 +21,9 @@ use Carp;
 use MARC::Record;
 use MARC::Field;
 use Data::Dumper;
+use Modern::Perl;
 
-use ExportCat;
+use ExplicitRecordNrField;
 
 has 'inputh' => (
     is => 'ro',
@@ -46,6 +47,12 @@ has 'record_count' => (
     default => 0
     );
 
+has 'accumulate_records' => (
+    is => 'ro',
+    isa => 'Bool',
+    default => 0
+    );
+
 has 'verbose' => (
     is => 'ro',
     isa => 'Bool'
@@ -62,7 +69,10 @@ sub BUILD {
     $self->{next_field} = undef;
 
     $self->{record_nr} = undef;
+    $self->{completed_record} = undef;
     $self->{eof} = 0;
+
+    $self->{records} = {};
 
     $self->{record_count} = 0;
 }
@@ -89,7 +99,7 @@ sub next_record {
             unless ($field->{field_type} == "000") {
                 croak "Expected leader field, got: " . Dumper($field);
             }
-            $record = MARC::Record->new();
+            $record = $self->new_record();
             my $leader = $field->{content};
             if (length($leader) == 23) {
                 $leader .= ' ';  # Append the final "undefined" byte.
@@ -129,6 +139,12 @@ sub next_record {
     $self->record_count($self->record_count + 1);
 
     $record->encoding( 'UTF-8' );
+
+    if ($self->{accumulate_records}) {
+        $self->{records}->{$self->{completed_record}} = $record;
+    }
+
+    $self->attach_record_id( $record );
 
     return $record;
 }
@@ -179,6 +195,7 @@ sub next_field {
 
     if (defined($self->{record_nr}) && $self->{record_nr} != $field->{record_nr}) {
         $self->{next_field} = $field;
+        $self->{completed_record} = $self->{record_nr};
         $self->{record_nr} = undef;
         return undef;
     }
@@ -227,6 +244,37 @@ sub check_field {
             }
         }
     }
+}
+
+sub new_record {
+    my $self = shift;
+
+    if ($self->{accumulate_records}) {
+        my $r = $self->{records}->{$self->{record_nr}};
+        if (defined($r)) {
+            carp "Record " . $self->record_nr . " already exists!";
+            return $r;
+        }
+    }
+
+    return MARC::Record->new();
+}
+
+sub get_records {
+    my $self = shift;
+    croak "I am not accumulating records!" unless $self->{accumulate_records};
+    return $self->{records};
+}
+
+sub attach_record_id {
+    my $self = shift;
+    my $record = shift;
+
+    my $field = MARC::Field->new( $ExplicitRecordNrField::RECORD_NR_FIELD,
+                                  ' ',
+                                  ' ',
+                                  ( $ExplicitRecordNrField::RECORD_NR_SUBFIELD => $self->{completed_record} ));
+    $record->append_fields( $field );
 }
 
 __PACKAGE__->meta->make_immutable;
