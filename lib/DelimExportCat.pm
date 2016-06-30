@@ -174,6 +174,8 @@ sub next_field {
             croak "Error when reading input: $!";
         }
         $self->{eof} = 1;
+        $self->{completed_record} = $self->{record_nr};
+        $self->{record_nr} = undef;
         return undef;
     }
 
