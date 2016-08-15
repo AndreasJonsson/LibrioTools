@@ -263,7 +263,7 @@ my $vars = {
 	'admin'       => \@admin,
 	'ill'         => \@ill
 };
-$tt2->process($template, $vars, $outfile) || die $tt2->error();
+$tt2->process($template, $vars, $outfile,  {binmode => ':utf8'}) || die $tt2->error();
 print "Go have a look at $outfile \n";
 
 # Takes a string of SQL and returns an integer

@@ -105,7 +105,7 @@ my $template = 'serials.tt2';
 my $vars = {
 	'serials'  => \@serials, 
 };
-$tt2->process($template, $vars) || die $tt2->error();
+$tt2->process($template, $vars,  {binmode => ':utf8'}) || die $tt2->error();
 
 ### SUBROUTINES ###
 
