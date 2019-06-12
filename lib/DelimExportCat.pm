@@ -22,6 +22,8 @@ use MARC::Record;
 use MARC::Field;
 use Data::Dumper;
 use Modern::Perl;
+use Text::CSV;
+use DBI;
 
 use ExplicitRecordNrField;
 
@@ -53,6 +55,11 @@ has 'accumulate_records' => (
     default => 0
     );
 
+has 'opt' => (
+    is => 'ro',
+    isa => 'Getopt::Long::Descriptive::Opts'
+    );
+
 has 'verbose' => (
     is => 'ro',
     isa => 'Bool'
@@ -75,6 +82,22 @@ sub BUILD {
     $self->{records} = {};
 
     $self->{record_count} = 0;
+
+    $self->{csv} = Text::CSV->new({
+	quote_char => $self->opt->quote,
+	sep_char => $self->opt->columndelimiter,
+	eol => "\r\n",
+	escape_char => $self->opt->escape
+				  });
+
+    for (my $n = 0; $n < $self->opt->headerrows; $n++) {
+	$self->csv->getline( $self->inputh );
+    }
+}
+
+sub csv {
+    my $self = shift;
+    return $self->{csv};
 }
 
 sub next_record {
@@ -95,26 +118,31 @@ sub next_record {
     my $record = undef;
 
     while (my $field  = $self->next_field()) {
+	my $process_field = 1;
         unless ($record) {
+	    $record = $self->new_record();
             unless ($field->{field_type} == "000") {
-                croak "Expected leader field, got: " . Dumper($field);
-            }
-            $record = $self->new_record();
-            my $leader = $field->{content};
-            if (length($leader) == 23) {
-                $leader .= ' ';  # Append the final "undefined" byte.
-            }
-            if (length($leader) != 24) {
-                if ($self->verbose || $self->debug) {
-                    carp "Leader length of record " . $self->{record_nr} . " is " . length($leader) . "!";
-                }
-                if (length($leader) < 24) {
-                    $leader .= ' ' x (24 - length($leader));
-                }
-            }
-            $record->leader($leader);
-            $record->{record_nr} = $self->{record_nr} if ($self->debug);
-        } else {
+                carp "Expected leader field, got: " . Dumper($field);
+            } else {
+		$process_field = 0;
+		$record = $self->new_record();
+		my $leader = $field->{content};
+		if (length($leader) == 23) {
+		    $leader .= ' ';  # Append the final "undefined" byte.
+		}
+		if (length($leader) != 24) {
+		    if ($self->verbose || $self->debug) {
+			carp "Leader length of record " . $self->{record_nr} . " is " . length($leader) . "!";
+		    }
+		    if (length($leader) < 24) {
+			$leader .= ' ' x (24 - length($leader));
+		    }
+		}
+		$record->leader($leader);
+		$record->{record_nr} = $self->{record_nr} if ($self->debug);
+	    }
+        } 
+	if ($process_field) {
             my $mf;
             if ($field->{field_type} =~ /^00/) {
                 $mf = MARC::Field->new( $field->{field_type}, $field->{content} );
@@ -152,7 +180,7 @@ sub next_record {
 sub next_field {
     my $self = shift;
 
-    local $/ = "!*!\n";
+    #local $/ = "!*!\n";
 
     my $fh = $self->inputh;
 
@@ -167,11 +195,12 @@ sub next_field {
         return $next_field;
     }
 
-    $line = <$fh>;
+    #$line = <$fh>;
+    my $columns = $self->csv->getline( $fh );
 
-    unless (defined($line)) {
-        if ($!) {
-            croak "Error when reading input: $!";
+    unless (defined($columns)) {
+        if (!$self->csv->eof && !$self->csv->status) {
+            croak "Error when reading input: " . $self->csv->error_diag;
         }
         $self->{eof} = 1;
         $self->{completed_record} = $self->{record_nr};
@@ -179,20 +208,50 @@ sub next_field {
         return undef;
     }
 
-    my @col = $line =~ /^(.*?)!\*!(.*?)!\*!(.*?)!\*!(.*?)!\*!(.*?)!\*!(.*?)!\*!(.*?)/s;
+    my @col = @$columns;
 
-    unless (+@col == 7) {
-        croak "Failed to parse input line of field number " . $fh->input_line_number() . ": '" . $line . "'";
+    if ($self->opt->format ne 'micromarc') {
+	unless (+@col == 7) {
+	    croak "Failed to parse input line of field number " . $fh->input_line_number() . ": '" . $line . "'";
+	}
     }
 
-    my $field = {
-        record_nr  => $col[0],
-        index1     => $col[1], # TODO I don't know what these are for.
-        field_type => $col[2],
-        index2     => $col[3], # TODO I don't know what these are for.
-        content    => $col[4],
-        indicator1 => $col[5],
-        indicator2 => $col[6]
+    my $field;
+
+    if ($self->opt->format eq 'micromarc') {
+	$field = {
+	    record_nr  => $col[0],
+	    field_type => $col[1],
+	    indicator1 => $col[2],
+	    indicator2 => $col[3],
+	    content    => $col[4]
+	};
+	# XXX Clean non-breakable spaces.
+	if ($field->{field_type} eq '020') {
+	    $field->{content} =~ s/\x{001f}//g;
+	}
+	if ($field->{field_type} eq '000' && length($field->{content}) != 24) {
+	    my $s = $field->{content};
+	    if (length($s) > 24) {
+		print STDERR "Leader too long: '$s'\n";
+		$s = substr($s, length($s) - 24);
+		$field->{content} = $s;
+	    } else {
+		#print STDERR "Leader too short: '$s'\n";
+		#$field->{content} = ' ' x 24;
+	    }
+	}
+
+    } else {
+	$field = {
+	    record_nr  => $col[0],
+	    index1     => $col[1], # TODO I don't know what these are for.
+	    field_type => $col[2],
+	    index2     => $col[3], # TODO I don't know what these are for.
+	    content    => $col[4],
+	    indicator1 => $col[5],
+	    indicator2 => $col[6]
+	};
     };
 
     if (defined($self->{record_nr}) && $self->{record_nr} != $field->{record_nr}) {

@@ -20,34 +20,35 @@
 use MARC::File::USMARC;
 use MARC::File::XML ( BinaryEncoding => 'utf8', RecordFormat => 'NORMARC' );
 use MARC::Record;
-use Getopt::Long;
+use Getopt::Long::Descriptive;
 use Modern::Perl;
+use File::BOM;
 use DelimExportCat;
 
-# Options
-my $file    = '';
-my $encode  = '';
-our $xml     = '';
-my $limit   = '';
-my $verbose = '';
-my $debug   = '';
-my $delimited = '';
-my $accumulate_records = 0;
+my ($opt, $usage) = describe_options(
+    '%c %o <some-arg>',
+    [ 'acc', "Accumulate records" ],
+    [ 'limit=i', 'Limit the number of records to output.' ],
+    [ 'xml', 'Produce marc-xml output.' ],
+    [ 'dir=s', "table directory", { required => 1  } ],
+    [ 'table=s', 'table name', { required => 1 } ],
+    [ 'format=s', 'Source format', { default => 'libra' } ],
+    [ 'dir=s',     'tables directory', { required => 1 } ],
+    [ 'ext=s',     'table filename extension', { default => '.txt' } ],
+    [ 'columndelimiter=s', 'column delimiter',  { default => '!*!' } ],
+    [ 'rowdelimiter=s',  'row delimiter'      ],
+    [ 'encoding=s',  'character encoding',      { default => 'utf-8' } ],
+    [ 'quote=s',  'quote character' ],
+    [ 'escape=s', 'escape character', { default => "\\" } ],
+    [ 'headerrows=i', 'number of header rows',  { default => 0 } ],
+    [ 'delimited', 'use DelimExportCat class',  { default => 1 } ],
+           [],
+           [ 'verbose|v',  "print extra stuff"            ],
+           [ 'debug|d',    "print debug stuff"            ],
+           [ 'help',       "print usage message and exit", { shortcircuit => 1 } ],
+         );
 
-GetOptions (
-  'a|acc'     => \$accumulate_records,
-  'i|input=s' => \$file,
-  'e|encode'  => \$encode,
-  'l|limit=i' => \$limit,
-  'x|xml'     => \$xml,
-  'v|verbose' => \$verbose,
-  'd|debug'   => \$debug,
-  'b|delimited' => \$delimited,
-);
-
-if ( $encode ) {
-    binmode STDOUT, ":encoding(UTF-8)";
-}
+print $usage->text if ($opt->help);
 
 sub trim {
    my $x = shift;
@@ -56,47 +57,25 @@ sub trim {
    return $x;
 }
 
-# Usage
-if (!$file) {
-  print "
-This will turn a file of MARC-records in line format into ISO2709 or MARCXML.
+my $filename = $opt->dir . '/' . $opt->table . $opt->ext;
 
-Usage:
-  ./line2iso.pl -i in.txt > out.mrc
-  ./line2iso.pl -i in.txt -x > out.xml
-
-Options:
-  -i --input   = Input file
-  -e, --encode = Apply: binmode STDOUT, :encoding(UTF-8)
-  -a, --acc    = Accumulate records before starting output (only works with --delim).
-  -l, --limit  = Limit outout to first n records
-  -x --xml     = Output as MARCXML
-  -v --verbose = Verbose output
-  -d --debug   = Debug-output
-  -b --delimited = Use delimited format of exportCat.txt
-
-See also:
-  yaz-marcdump http://www.indexdata.com/yaz/doc/yaz-marcdump.html
-
-";
-exit;
-}
+say STDERR "filename: $filename";
 
 # Check that the file exists
-if (!-e $file) {
-  print "The file $file does not exist...\n";
+if (!-e $filename) {
+  print "The file " . $filename . " does not exist...\n";
   exit;
 }
 
-open(my $fh, "<:crlf", $file) or die "Couldn't open \"$file\": $!";
+open(my $fh, "<:encoding(" . $opt->encoding . "):via(File::BOM)", $filename) or die "Couldn't open \"" . $filename . "\": $!";
 
-if ( $xml ) {
+if ( $opt->xml ) {
     say MARC::File::XML::header();
 }
 
 sub output {
     my $record = shift;
-    if ($xml) {
+    if ($opt->xml) {
         # print $record->as_xml_record(), "\n";
         say MARC::File::XML::record( $record );
     } else {
@@ -105,26 +84,27 @@ sub output {
 }
 
 
-if ($delimited) {
+if ($opt->delimited) {
 
     my $dec = DelimExportCat->new( {
         'inputh'             => $fh,
-        'limit'              => $limit ? $limit : undef,
-        'verbose'            => $verbose,
-        'accumulate_records' => $accumulate_records,
-        'debug'              => $debug
+        'limit'              => $opt->limit ? $opt->limit : undef,
+        'verbose'            => $opt->verbose,
+        'accumulate_records' => $opt->acc,
+        'opt'                => $opt,
+        'debug'              => $opt->debug
     } );
 
     while (my $record = $dec->next_record()) {
         foreach my $warning ($record->warnings()) {
             say STDERR "Record " . $record->{record_nr} . " has warnings: " . $warning;
         }
-        unless ($accumulate_records) {
+        unless ($opt->acc) {
             output($record);
         }
     }
 
-    if ($accumulate_records) {
+    if ($opt->acc) {
         my %records = %{$dec->get_records()};
         foreach my $record_id (keys %records) {
             my $record = $records{$record_id};
@@ -132,7 +112,7 @@ if ($delimited) {
         }
     }
 
-    say STDERR "Num records: " . $dec->record_count if $verbose;
+    say STDERR "Num records: " . $dec->record_count if $opt->verbose;
 
 } else {
 # Start an empty record
@@ -146,7 +126,7 @@ if ($delimited) {
 
         chomp($line);
 
-        say $line if $debug;
+        say $line if $opt->debug;
 
         # For some reason some lines begin with "**"
         # These seem to be errors of some kind, so we skip them
@@ -157,7 +137,7 @@ if ($delimited) {
         # Look for lines that begin with a ^ - these are record delimiters
         if ($line =~ /^\^/) {
 
-            say "\nEND OF RECORD $num" if $verbose;
+            say "\nEND OF RECORD $num" if $opt->verbose;
 
             # Make sure the encoding is set
             $record->encoding( 'UTF-8' );
@@ -166,7 +146,7 @@ if ($delimited) {
             if ( $record->field( '245' ) && $record->field( '245' )->subfield( 'a' ) && $record->field( '245' )->subfield( 'a' ) ne '' ) {
 
                 # Output the record in the desired format
-                if ($xml) {
+                if ($opt->xml) {
                     # print $record->as_xml_record(), "\n";
                     say MARC::File::XML::record( $record );
                 } else {
@@ -177,7 +157,7 @@ if ($delimited) {
                 $num++;
 
                 # Check if we should quit here
-                if ($limit && $limit == $num) {
+                if ($opt->limit && $opt->limit == $num) {
                     last;
                 }
 
@@ -259,7 +239,7 @@ if ($delimited) {
 
         }
 
-        say "Line $line_count" if $verbose;
+        say "Line $line_count" if $opt->verbose;
         $line_count++;
 
     }
@@ -267,7 +247,7 @@ if ($delimited) {
 # print "\n$num records processed\n";
 }
 
-if ( $xml ) {
+if ( $opt->xml ) {
     say MARC::File::XML::footer();
     print "\n";
 }
