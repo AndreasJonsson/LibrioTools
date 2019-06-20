@@ -83,12 +83,21 @@ sub BUILD {
 
     $self->{record_count} = 0;
 
-    $self->{csv} = Text::CSV->new({
-	quote_char => $self->opt->quote,
-	sep_char => $self->opt->columndelimiter,
-	eol => "\r\n",
-	escape_char => $self->opt->escape
-				  });
+    my $params = {
+	sep_char => $self->opt->columndelimiter
+    };
+
+    if ($self->opt->rowdelimiter) {
+	$params->{eol} = $self->opt->rowdelimiter;
+    }
+    if (defined($self->opt->quote) && $self->opt->quote ne '') {
+	$params->{quote_char} = $self->opt->quote;
+    }
+    if (defined($self->opt->escape) && $self->opt->escape ne '') {
+	$params->{escape_char} = $self->opt->escape;
+    }
+
+    $self->{csv} = Text::CSV->new($params);
 
     for (my $n = 0; $n < $self->opt->headerrows; $n++) {
 	$self->csv->getline( $self->inputh );
@@ -121,11 +130,8 @@ sub next_record {
 	my $process_field = 1;
         unless ($record) {
 	    $record = $self->new_record();
-            unless ($field->{field_type} == "000") {
-                carp "Expected leader field, got: " . Dumper($field);
-            } else {
+	    if ($field->{field_type} eq "000") {
 		$process_field = 0;
-		$record = $self->new_record();
 		my $leader = $field->{content};
 		if (length($leader) == 23) {
 		    $leader .= ' ';  # Append the final "undefined" byte.
@@ -140,6 +146,8 @@ sub next_record {
 		}
 		$record->leader($leader);
 		$record->{record_nr} = $self->{record_nr} if ($self->debug);
+	    } else {
+		# carp "No leader on record number " . $record->{record_nr};
 	    }
         } 
 	if ($process_field) {
@@ -148,6 +156,10 @@ sub next_record {
                 $mf = MARC::Field->new( $field->{field_type}, $field->{content} );
             } else {
                 my @field_data = eval { $self->field_data( $field->{content} ) };
+
+		if (scalar(@field_data) == 0) {
+		    next;
+		}
 
                 if ($@) {
                     carp $@;
@@ -272,12 +284,13 @@ sub field_data {
 
     my @subfields = split($self->{SUBFIELD_INDICATOR}, $content);
 
-    if (length($subfields[0]) != 0) {
-        croak "There is content before first subfield: '$content' record nr: " . $self->{record_nr};
+    if (+@subfields == 0) {
+        #croak "Field without subfields: " . $self->{record_nr};
+	return ();
     }
 
-    if (+@subfields == 0) {
-        croak "Field without subfields: " . $self->{record_nr};
+    if (length($subfields[0]) != 0) {
+        croak "There is content before first subfield: '$content' record nr: " . $self->{record_nr};
     }
 
     shift @subfields;

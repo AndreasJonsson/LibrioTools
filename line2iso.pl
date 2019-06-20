@@ -1,4 +1,4 @@
-#!/usr/bin/env perl
+#!/usr/bin/perl
 
 # line2iso.pl
 # Copyright 2009 Magnus Enger
@@ -33,11 +33,13 @@ my ($opt, $usage) = describe_options(
     [ 'dir=s', "table directory", { required => 1  } ],
     [ 'table=s', 'table name', { required => 1 } ],
     [ 'format=s', 'Source format', { default => 'libra' } ],
+    [ 'spec=s',    'spec directory',   { required => 1 } ],
     [ 'dir=s',     'tables directory', { required => 1 } ],
     [ 'ext=s',     'table filename extension', { default => '.txt' } ],
     [ 'columndelimiter=s', 'column delimiter',  { default => '!*!' } ],
     [ 'rowdelimiter=s',  'row delimiter'      ],
     [ 'encoding=s',  'character encoding',      { default => 'utf-8' } ],
+    [ 'specencoding=s',  'character encoding of specfile',      { default => 'utf-8' } ],
     [ 'quote=s',  'quote character' ],
     [ 'escape=s', 'escape character', { default => "\\" } ],
     [ 'headerrows=i', 'number of header rows',  { default => 0 } ],
