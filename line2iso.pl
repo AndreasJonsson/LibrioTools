@@ -22,8 +22,8 @@ use MARC::File::XML ( BinaryEncoding => 'utf8', RecordFormat => 'NORMARC' );
 use MARC::Record;
 use Getopt::Long::Descriptive;
 use Modern::Perl;
-use File::BOM;
 use DelimExportCat;
+use Scalar::Util qw(blessed);
 
 my ($opt, $usage) = describe_options(
     '%c %o <some-arg>',
@@ -33,15 +33,14 @@ my ($opt, $usage) = describe_options(
     [ 'dir=s', "table directory", { required => 1  } ],
     [ 'table=s', 'table name', { required => 1 } ],
     [ 'format=s', 'Source format', { default => 'libra' } ],
-    [ 'spec=s',    'spec directory',   { required => 1 } ],
-    [ 'dir=s',     'tables directory', { required => 1 } ],
     [ 'ext=s',     'table filename extension', { default => '.txt' } ],
     [ 'columndelimiter=s', 'column delimiter',  { default => '!*!' } ],
     [ 'rowdelimiter=s',  'row delimiter'      ],
     [ 'encoding=s',  'character encoding',      { default => 'utf-8' } ],
-    [ 'specencoding=s',  'character encoding of specfile',      { default => 'utf-8' } ],
+    [ 'output=s', 'file name of output' ],
     [ 'quote=s',  'quote character' ],
-    [ 'escape=s', 'escape character', { default => "\\" } ],
+    [ 'bom', 'use bom', { default => 0 } ],
+    [ 'escape=s', 'escape character', { default => undef } ],
     [ 'headerrows=i', 'number of header rows',  { default => 0 } ],
     [ 'delimited', 'use DelimExportCat class',  { default => 1 } ],
            [],
@@ -51,6 +50,16 @@ my ($opt, $usage) = describe_options(
          );
 
 print $usage->text if ($opt->help);
+
+if (!defined $opt->output) {
+    if ($opt->xml) {
+	binmode STDOUT, ":encoding(utf-8)";
+    } else {
+	binmode STDOUT;
+    }
+} else {
+    binmode STDOUT, ":utf8";
+}
 
 sub trim {
    my $x = shift;
@@ -69,19 +78,38 @@ if (!-e $filename) {
   exit;
 }
 
-open(my $fh, "<:encoding(" . $opt->encoding . "):via(File::BOM)", $filename) or die "Couldn't open \"" . $filename . "\": $!";
+my $fh;
+if ($opt->bom) {
+    use File::BOM;
+    open($fh, "<:encoding(" . $opt->encoding . "):via(File::BOM)", $filename) or die "Couldn't open \"" . $filename . "\": $!";
+} else {
+    open($fh, "<:encoding(" . $opt->encoding . ")", $filename) or die "Couldn't open \"" . $filename . "\": $!";
+}
+
+my $output_fh;
+if (defined $opt->output) {
+    open $output_fh, ">", $opt->output;
+    binmode $output_fh;
+    if ($opt->xml) {
+	binmode $output_fh, ":encoding(utf-8)";
+    } else {
+	binmode $output_fh, ":utf8";
+    }
+} else {
+    $output_fh = \*STDOUT;
+}
 
 if ( $opt->xml ) {
-    say MARC::File::XML::header();
+    say $output_fh MARC::File::XML::header();
 }
 
 sub output {
     my $record = shift;
     if ($opt->xml) {
         # print $record->as_xml_record(), "\n";
-        say MARC::File::XML::record( $record );
+        say $output_fh MARC::File::XML::record( $record );
     } else {
-        print $record->as_usmarc(), "\n";
+        print $output_fh  MARC::File::USMARC::encode( $record );
     }
 }
 
@@ -98,12 +126,18 @@ if ($opt->delimited) {
     } );
 
     while (my $record = $dec->next_record()) {
-        foreach my $warning ($record->warnings()) {
-            say STDERR "Record " . $record->{record_nr} . " has warnings: " . $warning;
-        }
-        unless ($opt->acc) {
-            output($record);
-        }
+	if (blessed $record) {
+	    foreach my $warning ($record->warnings()) {
+		say STDERR "Record " . $record->{record_nr} . " has warnings: " . $warning;
+	    }
+	    unless ($opt->acc) {
+		output($record);
+	    }
+	}
+    }
+
+    if ($opt->format eq 'aleph') {
+	$dec->aleph_analyze;
     }
 
     if ($opt->acc) {
@@ -250,7 +284,7 @@ if ($opt->delimited) {
 }
 
 if ( $opt->xml ) {
-    say MARC::File::XML::footer();
+    say $output_fh MARC::File::XML::footer();
     print "\n";
 }
 

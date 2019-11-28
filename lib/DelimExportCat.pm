@@ -24,6 +24,7 @@ use Data::Dumper;
 use Modern::Perl;
 use Text::CSV;
 use DBI;
+use utf8;
 
 use ExplicitRecordNrField;
 
@@ -33,7 +34,7 @@ has 'inputh' => (
     );
 
 has 'SUBFIELD_INDICATOR' => (
-    is => 'ro',
+    is => 'rw',
     isa => 'RegexpRef',
     default => sub { return qr/\$/; }
     );
@@ -83,6 +84,8 @@ sub BUILD {
 
     $self->{record_count} = 0;
 
+    $self->{process} = sub { return $_[1]; };
+
     my $params = {
 	sep_char => $self->opt->columndelimiter
     };
@@ -101,6 +104,16 @@ sub BUILD {
 
     for (my $n = 0; $n < $self->opt->headerrows; $n++) {
 	$self->csv->getline( $self->inputh );
+    }
+
+    if ($self->opt->format eq 'aleph') {
+	$self->{getline} = \&_getline_aleph;
+	$self->SUBFIELD_INDICATOR(qr/\$\$/);
+	$self->{unknown} = {};
+	$self->{process} = \&_aleph_process_record;
+	$self->{aleph_analyze} = {};
+    } else {
+	$self->{getline} = \&_getline_csv;
     }
 }
 
@@ -126,8 +139,11 @@ sub next_record {
 
     my $record = undef;
 
-    while (my $field  = $self->next_field()) {
+    FIELD: while (my $field  = $self->next_field()) {
 	my $process_field = 1;
+
+	next FIELD if ($field->{field_type} eq '');
+	
         unless ($record) {
 	    $record = $self->new_record();
 	    if ($field->{field_type} eq "000") {
@@ -145,6 +161,7 @@ sub next_record {
 		    }
 		}
 		$record->leader($leader);
+		$record->encoding( 'UTF-8' ) if ($self->opt->format eq 'aleph');
 		$record->{record_nr} = $self->{record_nr} if ($self->debug);
 	    } else {
 		# carp "No leader on record number " . $record->{record_nr};
@@ -176,17 +193,322 @@ sub next_record {
         }
     }
 
-    $self->record_count($self->record_count + 1);
+    if (defined $record) {
 
-    $record->encoding( 'UTF-8' );
+	$self->record_count($self->record_count + 1);
 
-    if ($self->{accumulate_records}) {
-        $self->{records}->{$self->{completed_record}} = $record;
+	if ($self->{accumulate_records}) {
+	    $self->{records}->{$self->{completed_record}} = $record;
+	}
+
+	$self->attach_record_id( $record );
+
+	$record = $self->process_record( $record );
+
+	return $record;
     }
 
-    $self->attach_record_id( $record );
+    return 1;
+}
+
+sub process_record {
+    my $self = shift;
+    my $record = shift;
+
+    return $self->{process}->($self, $record);
+}
+
+sub getline {
+    my $self = shift;
+    my $fh = shift;
+
+    return $self->{getline}->($self, $fh);
+}
+ 
+sub _getline_csv {
+    my $self = shift;
+    my $fh = shift;
+
+    return $self->csv->getline( $fh );
+}
+
+sub aleph_analyze {
+    my $self = shift;
+    for my $field (keys %{$self->{aleph_stat}}) {
+	print "----------------------------------------- $field -------------------------------------\n";
+
+	my @s = ();
+	while (my ($v, $n) = each %{$self->{aleph_stat}->{$field}}) {
+	    push @s, [$v, $n];
+	}
+	@s = sort { $b->[1] - $a->[1] } @s;
+
+	for my $s0 (@s) {
+	    print $s0->[0], ": ", $s0->[1], "\n";
+	}
+    }
+}
+
+sub add_to_comment {
+    my $field = shift;
+    my $text = shift;
+    if (defined $field->subfield('z')) {
+	$text = $field->subfield('z') . "\n\n" . $text;
+	$field->delete_subfield('z');
+    }
+    $field->add_subfields('z', $text);
+}
+
+sub _aleph_process_record {
+    my $self = shift;
+    my $record = shift;
+
+    my @items = ();
+    
+    for my $field ($record->field('952')) {
+	$record->delete_fields($field);
+
+	for my $sf ($field->subfields()) {
+	    next if $sf->[0] eq 'm' || $sf->[0] eq '5' || $sf->[0] eq '8' || $sf->[0] eq 'L';
+	    my $stat = $self->{aleph_stat}->{$sf->[0]};
+	    if (! defined $stat) {
+		$stat = {};
+		$self->{aleph_stat}->{$sf->[0]} = $stat;
+	    }
+
+	    my $n = $stat->{$sf->[1]};
+	    if (!defined $n) {
+		$n = 1;
+	    } else {
+		$n++;
+	    }
+	    $stat->{$sf->[1]} = $n;
+	}
+
+=h1	
+ b:  nummer 'Vol 1','4/96'
+----------------------------------------- f -------------------------------------
+01: 16222
+14: 5513
+12: 181
+13: 1
+----------------------------------------- 4 -------------------------------------
+Papperskopia.: 3
+----------------------------------------- P -------------------------------------
+Saknas: 2
+Order påbörja: 2
+----------------------------------------- h -------------------------------------
+----------------------------------------- h -------------------------------------
+Bilaga: 6
+Ryska: 5
+Del 2: 5
+Del 1-2: 3
+Volym 1: 3
+Volym 2: 3
+Särtryck: Nordforsk, Miljövårdssekretariatet publikation 1978:2: 2
+Del 1: 2
+Fotobilaga: 2
+Kartbilaga: 2
+Papperskopior: 2
+Franska: 2
+Bilagor, 10 st.: 1
+vol. I: 1
+Del I, III: 1
+Vol. 1  A-H: 1
+Med rätt titel och ISBN på bakre omslaget.: 1
+vol. II: 1
+Register: 1
+2007: 1
+Äldre upplaga.: 1
+Vol. 2 I-Z: 1
+Artikel i Environmental research 17,19-204(1978): 1
+Artikel i Marine pollution bulletin, Vol. 9, 238-241(1978): 1
+Obs defekt i bindning omslag och inlaga: 1
+----------------------------------------- 9 -------------------------------------
+12 Geovetenskaper: 1
+071-SNV Rapport 4403: 1
+071-SNV PM 1297: 1
+----------------------------------------- 2 -------------------------------------
+NVPUB: 19817
+MON: 1817
+----------------------------------------- 7 -------------------------------------
+Fotobilaga.: 2
+Kartbilaga.: 2
+Endast personallån. Står på Miljöövervakningsenheten Mm.: 1
+----------------------------------------- B -------------------------------------
+NV:s publikationer: 19817
+Monografier: 1817
+----------------------------------------- p -------------------------------------
+OI: 2
+MI: 2
+----------------------------------------- A -------------------------------------
+Stockholm: 21917
+----------------------------------------- 3 -------------------------------------
+SNV-mon Monografier från Naturvårdsverket: 1219
+071-SNV Naturvårdsverket informerar: 700
+12 Geovetenskaper: 498
+025 Samhällsvetenskap: 370
+SNV-mon: 267
+025.2 Ekonomi: 210
+026 Administration och personalvård: 191
+071-SNV Branschfakta: 168
+021 Konventioner och internationell rätt: 130
+071-SNV Rapporter / Statens naturvårdsverk: 106
+071-SNV SEPA informs: 85
+020.2 Svensk rätt: 71
+071-SNV Naturvårdsverket informerar: Kemiska ämnen: 67
+...
+----------------------------------------- g -------------------------------------
+1363: 2
+1130: 2
+1333: 1
+2050: 1
+2284: 1
+1397: 1
+2101: 1
+2252: 1
+1912: 1
+821: 1
+902: 1
+    ...
+----------------------------------------- 1 -------------------------------------
+NVVST: 21917
+----------------------------------------- M -------------------------------------
+000: 18898
+001: 1708
+002: 653
+003: 281
+004: 142
+005: 91
+006: 48
+007: 36
+008: 16
+009: 12
+011: 9
+010: 7
+015: 6
+012: 2
+021: 1
+029: 1
+018: 1
+030: 1
+023: 1
+017: 1
+014: 1
+013: 1
+=cut	    
+
+	my @Ls = $field->subfield('L');
+	my $f = MARC::Field->new(952, ' ', ' ',
+				 'a' => 'NATURVARD',
+				 'b' => 'NATURVARD'
+	    );
+	if (defined $field->subfield('m')) {
+	    $f->add_subfields('3', $field->subfield('m'));
+	}
+	if (defined $field->subfield('5')) {
+	    $f->add_subfields('p', $field->subfield('5'));
+	}
+	if (defined $field->subfield('5')) {
+	    $f->add_subfields('a', $field->subfield('5'));
+	}
+	if (defined $field->subfield('B')) {
+	    $f->add_subfields('o', $field->subfield('B'));
+	}
+	if (defined $field->subfield('8')) {
+	    $f->add_subfields('d', $field->subfield('8'));
+	}
+
+	if (defined $field->subfield('F')) {
+	    my $itype_src = $field->subfield('F');
+	    my $itype;
+	    if ($itype_src eq 'Normallån') {
+		$itype = 'NORMAL';
+	    } elsif ($itype_src eq 'Referenslån') {
+		$itype = 'REFERENS';
+	    } elsif ($itype_src eq 'Personallån') {
+		$itype = 'PERSONAL';
+	    } elsif ($itype_src eq 'Tidskriftslån') {
+		$itype = 'TIDSKRIFT';
+	    } else {
+		die "Unknown itype: $itype_src";
+	    }
+	    $f->add_subfields('y', $itype);
+	}
+
+	if (defined $field->subfield('h')) {
+	    add_to_comment($f, $field->subfield('h'));
+	}
+	if (defined $field->subfield('4')) {
+	    add_to_comment($f, $field->subfield('4'));
+	}
+	if (defined $field->subfield('7')) {
+	    add_to_comment($f, $field->subfield('7'));
+	}
+	if (defined $field->subfield('P')) {
+	    my $status = $field->subfield('P');
+	    if ($status eq 'Saknas') {
+		$f->add_subfields('1', 1);
+	    } elsif ($status eq 'Order påbörja') {
+		$f->add_subfields('7', -1);
+	    }
+	}
+	if (defined $field->subfield('3')) {
+	    $f->add_subfields('8', $field->subfield('3'));
+	} elsif (defined $field->subfield('9')) {
+	    $f->add_subfields('8', $field->subfield('9'));
+	}
+
+
+	push @items, $f;
+    }
+
+    $record->add_fields(@items);
 
     return $record;
+}
+
+sub _getline_aleph {
+    my $self = shift;
+    my $fh = shift;
+
+    my $line = <$fh>;
+
+    return undef unless defined $line;
+
+    my $id = substr($line, 0, 9);
+    my $cmd = substr($line, 10, 5);
+    my $data = substr($line, 18);
+
+    chomp $data;
+
+    my $tag = '';
+    my $ind1 = '';
+    my $ind2 = '';
+
+    if ($cmd eq 'LDR  ') {
+	$tag = '000';
+    } elsif ($cmd =~ /(0(?:(?:0[1-9])|(?:10)))(.)(.)/) {
+	$tag = $1;
+	$ind1 = $2;
+	$ind2 = $3;
+	$data =~ s/\^/ /g;
+    } elsif ($cmd =~ /(\d\d\d)(.)(.)/) {
+	$tag = $1;
+	$ind1 = $2;
+	$ind2 = $3;
+    } elsif ($cmd =~ /Z30-1/) {
+	$tag = '952';
+	$ind1 = ' ';
+	$ind2 = ' ';
+    } else {
+	unless ($self->{unknown}->{$cmd}) {
+	    $self->{unknown}->{$cmd} = 1;
+	    warn "Unknown command '$cmd'";
+	}
+    }
+
+    return [$id, $tag, $ind1, $ind2, $data];
 }
 
 sub next_field {
@@ -208,10 +530,10 @@ sub next_field {
     }
 
     #$line = <$fh>;
-    my $columns = $self->csv->getline( $fh );
+    my $columns = $self->getline( $fh );
 
     unless (defined($columns)) {
-        if (!$self->csv->eof && !$self->csv->status) {
+        if ($self->opt->format ne 'aleph' && (!$self->csv->eof && !$self->csv->status)) {
             croak "Error when reading input: " . $self->csv->error_diag;
         }
         $self->{eof} = 1;
@@ -222,7 +544,7 @@ sub next_field {
 
     my @col = @$columns;
 
-    if ($self->opt->format ne 'micromarc') {
+    if ($self->opt->format ne 'micromarc' && $self->opt->format ne 'aleph') {
 	unless (+@col == 7) {
 	    croak "Failed to parse input line of field number " . $fh->input_line_number() . ": '" . $line . "'";
 	}
@@ -254,6 +576,14 @@ sub next_field {
 	    }
 	}
 
+    } elsif ($self->opt->format eq 'aleph') {
+	$field = {
+	    record_nr  => $col[0],
+	    field_type => $col[1],
+	    indicator1 => $col[2],
+	    indicator2 => $col[3],
+	    content    => $col[4]
+	};
     } else {
 	$field = {
 	    record_nr  => $col[0],
